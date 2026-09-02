@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Robot Explorer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #87ceeb; }
+  canvas { display: block; }
+  #hud {
+    position: fixed; top: 10px; left: 10px;
+    font: 14px/1.4 monospace; color: #fff; text-shadow: 0 0 3px #000;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="hud">WASD / Arrow Keys to move &mdash; Shift to run</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from "three";
+
+// --- scene / camera / renderer ---
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb);
+scene.fog = new THREE.Fog(0x87ceeb, 30, 120);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 500);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// --- lights ---
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+sun.position.set(20, 30, 10);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -50;
+sun.shadow.camera.right = 50;
+sun.shadow.camera.top = 50;
+sun.shadow.camera.bottom = -50;
+scene.add(sun);
+
+// --- open ground (a plain field, nothing fancy) ---
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(300, 300),
+  new THREE.MeshStandardMaterial({ color: 0x6ba368 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+const grid = new THREE.GridHelper(300, 60, 0x2f4f2f, 0x2f4f2f);
+grid.material.opacity = 0.15;
+grid.material.transparent = true;
+scene.add(grid);
+
+// a handful of scattered boxes so the world isn't totally empty
+for (let i = 0; i < 25; i++) {
+  const size = 1 + Math.random() * 2;
+  const box = new THREE.Mesh(
+    new THREE.BoxGeometry(size, size, size),
+    new THREE.MeshStandardMaterial({ color: 0x8a6d3b })
+  );
+  box.position.set((Math.random() - 0.5) * 200, size / 2, (Math.random() - 0.5) * 200);
+  box.castShadow = true;
+  box.receiveShadow = true;
+  scene.add(box);
+}
+
+// --- the robot: a simple, boxy mobile bot ---
+const robot = new THREE.Group();
+
+const body = new THREE.Mesh(
+  new THREE.BoxGeometry(1.2, 1, 1.6),
+  new THREE.MeshStandardMaterial({ color: 0x3d7ea6 })
+);
+body.position.y = 0.8;
+body.castShadow = true;
+robot.add(body);
+
+const head = new THREE.Mesh(
+  new THREE.BoxGeometry(0.7, 0.6, 0.7),
+  new THREE.MeshStandardMaterial({ color: 0xdddddd })
+);
+head.position.set(0, 1.6, 0);
+head.castShadow = true;
+robot.add(head);
+
+const eyeMat = new THREE.MeshStandardMaterial({ color: 0x00e5ff, emissive: 0x00e5ff, emissiveIntensity: 0.8 });
+[-0.18, 0.18].forEach((x) => {
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 12), eyeMat);
+  eye.position.set(x, 1.65, 0.36);
+  robot.add(eye);
+});
+
+const wheelGeo = new THREE.CylinderGeometry(0.35, 0.35, 0.3, 16);
+const wheelMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+const wheelPositions = [
+  [-0.75, 0.35, 0.6], [0.75, 0.35, 0.6],
+  [-0.75, 0.35, -0.6], [0.75, 0.35, -0.6],
+];
+const wheels = wheelPositions.map(([x, y, z]) => {
+  const w = new THREE.Mesh(wheelGeo, wheelMat);
+  w.rotation.z = Math.PI / 2;
+  w.position.set(x, y, z);
+  w.castShadow = true;
+  robot.add(w);
+  return w;
+});
+
+robot.position.set(0, 0, 0);
+scene.add(robot);
+
+// --- movement ---
+const keys = new Set();
+addEventListener("keydown", (e) => keys.add(e.key.toLowerCase()));
+addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+
+const WALK_SPEED = 5;   // units/sec
+const RUN_SPEED = 10;
+const TURN_SPEED = 2.5; // rad/sec
+
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.1);
+
+  const forward = keys.has("w") || keys.has("arrowup");
+  const back = keys.has("s") || keys.has("arrowdown");
+  const left = keys.has("a") || keys.has("arrowleft");
+  const right = keys.has("d") || keys.has("arrowright");
+  const running = keys.has("shift");
+
+  if (left) robot.rotation.y += TURN_SPEED * dt;
+  if (right) robot.rotation.y -= TURN_SPEED * dt;
+
+  const speed = running ? RUN_SPEED : WALK_SPEED;
+  let moved = 0;
+  if (forward) moved = speed * dt;
+  if (back) moved = -speed * dt;
+
+  if (moved !== 0) {
+    robot.position.x += Math.sin(robot.rotation.y) * moved;
+    robot.position.z += Math.cos(robot.rotation.y) * moved;
+    wheels.forEach((w) => (w.rotation.x -= moved * 3));
+  }
+
+  // simple open map bound so the bot doesn't wander off into the void
+  const LIMIT = 140;
+  robot.position.x = Math.max(-LIMIT, Math.min(LIMIT, robot.position.x));
+  robot.position.z = Math.max(-LIMIT, Math.min(LIMIT, robot.position.z));
+
+  // third-person follow camera
+  const camOffset = new THREE.Vector3(0, 4, -8).applyAxisAngle(new THREE.Vector3(0, 1, 0), robot.rotation.y);
+  const desiredCamPos = robot.position.clone().add(camOffset);
+  camera.position.lerp(desiredCamPos, 1 - Math.pow(0.001, dt));
+  camera.lookAt(robot.position.clone().add(new THREE.Vector3(0, 1, 0)));
+
+  renderer.render(scene, camera);
+
+  // Broadcast live robot state so an extension/content-script can pick it
+  // up with a plain `window.addEventListener("message", ...)`.
+  window.postMessage({
+    type: "robot-state",
+    x: robot.position.x,
+    z: robot.position.z,
+    rotationY: robot.rotation.y,
+  }, "*");
+
+  // Anyone forwarding commands back in can drive the robot the same way
+  // the keyboard does, e.g. window.postMessage({ type: "robot-command",
+  // forward: true, left: false, right: false }, "*").
+}
+addEventListener("message", (e) => {
+  if (e.source !== window || e.data?.type !== "robot-command") return;
+  const cmd = e.data;
+  if (cmd.forward) keys.add("w"); else keys.delete("w");
+  if (cmd.back) keys.add("s"); else keys.delete("s");
+  if (cmd.left) keys.add("a"); else keys.delete("a");
+  if (cmd.right) keys.add("d"); else keys.delete("d");
+  if (cmd.run) keys.add("shift"); else keys.delete("shift");
+});
+animate();
+</script>
+</body>
+</html>
