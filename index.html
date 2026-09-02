@@ -67,6 +67,7 @@ grid.material.transparent = true;
 scene.add(grid);
 
 // a handful of scattered boxes so the world isn't totally empty
+const boxes = [];
 for (let i = 0; i < 25; i++) {
   const size = 1 + Math.random() * 2;
   const box = new THREE.Mesh(
@@ -77,6 +78,7 @@ for (let i = 0; i < 25; i++) {
   box.castShadow = true;
   box.receiveShadow = true;
   scene.add(box);
+  boxes.push(box);
 }
 
 // --- the robot: a simple, boxy mobile bot ---
@@ -171,27 +173,50 @@ function animate() {
 
   renderer.render(scene, camera);
 
-  // Broadcast live robot state so an extension/content-script can pick it
-  // up with a plain `window.addEventListener("message", ...)`.
+  // FPS calculation
+  const fps = Math.round(1 / Math.max(dt, 0.001));
+
+  // Check proximity to obstacle boxes
+  let nearBox = false;
+  let nearestBoxDist = Infinity;
+  boxes.forEach((b) => {
+    const dist = robot.position.distanceTo(b.position);
+    if (dist < nearestBoxDist) nearestBoxDist = dist;
+    if (dist < 3.5) nearBox = true;
+  });
+
+  // Broadcast live robot state so an extension/content-script/Playwright bridge can pick it up
   window.postMessage({
     type: "robot-state",
-    x: robot.position.x,
-    z: robot.position.z,
-    rotationY: robot.rotation.y,
+    x: Number(robot.position.x.toFixed(2)),
+    z: Number(robot.position.z.toFixed(2)),
+    rotationY: Number(robot.rotation.y.toFixed(2)),
+    fps: fps,
+    nearBox: nearBox,
+    nearestBoxDist: Number(nearestBoxDist.toFixed(2))
   }, "*");
-
-  // Anyone forwarding commands back in can drive the robot the same way
-  // the keyboard does, e.g. window.postMessage({ type: "robot-command",
-  // forward: true, left: false, right: false }, "*").
 }
+
 addEventListener("message", (e) => {
   if (e.source !== window || e.data?.type !== "robot-command") return;
   const cmd = e.data;
-  if (cmd.forward) keys.add("w"); else keys.delete("w");
-  if (cmd.back) keys.add("s"); else keys.delete("s");
-  if (cmd.left) keys.add("a"); else keys.delete("a");
-  if (cmd.right) keys.add("d"); else keys.delete("d");
-  if (cmd.run) keys.add("shift"); else keys.delete("shift");
+
+  // Key controls
+  if (cmd.forward !== undefined) { if (cmd.forward) keys.add("w"); else keys.delete("w"); }
+  if (cmd.back !== undefined) { if (cmd.back) keys.add("s"); else keys.delete("s"); }
+  if (cmd.left !== undefined) { if (cmd.left) keys.add("a"); else keys.delete("a"); }
+  if (cmd.right !== undefined) { if (cmd.right) keys.add("d"); else keys.delete("d"); }
+  if (cmd.run !== undefined) { if (cmd.run) keys.add("shift"); else keys.delete("shift"); }
+  if (cmd.stop) { keys.clear(); }
+
+  // Custom action controls (Teleport, Color change)
+  if (cmd.action === "teleport" && typeof cmd.x === "number" && typeof cmd.z === "number") {
+    robot.position.x = cmd.x;
+    robot.position.z = cmd.z;
+  }
+  if (cmd.action === "color" && cmd.color) {
+    body.material.color.set(cmd.color);
+  }
 });
 animate();
 </script>
