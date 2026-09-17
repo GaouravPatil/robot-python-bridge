@@ -1,41 +1,70 @@
+"""Robot Python Bridge — Proxie DevOps Assignment (Round 1).
+
+Proves a fully static hosted web app can be observed and controlled
+from ordinary local Python, with no backend added to the hosting.
+
+Hosting: pure static files only (GitHub Pages). index.html is untouched.
+Mechanism: Playwright (Chrome DevTools Protocol) automation from local Python.
+  - Read (page -> Python): page broadcasts window.postMessage({type:"robot-state"...})
+    every frame. We catch it with add_init_script and forward it via
+    expose_binding("robotState") into Python. Event-driven, sub-second, no screenshots.
+  - Write (Python -> page): page listens for window.postMessage({type:"robot-command"...}).
+    We inject commands with page.evaluate(). Reuses the page's own key handling.
+"""
+
 import asyncio
 import json
+import os
 import time
 from playwright.async_api import async_playwright
 
 HOSTED_URL = "https://gaouravpatil.github.io/robot-python-bridge/"
 
-# Global variable to hold the latest state
+# Set HEADLESS=1 to run without opening a visible window (CI / servers without display).
+HEADLESS = os.getenv("HEADLESS", "0") == "1"
+
 latest_state = {}
 last_print_time = 0
 
+
 async def main():
     global latest_state, last_print_time
-    print(f"Connecting to hosted Web App: {HOSTED_URL}...")
-    
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context()
-        page = await context.new_page()
 
-        # Callback for receiving live robot-state messages from browser tab
-        async def receive_state(source, data):
+    print(f"Connecting to {HOSTED_URL}...")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=HEADLESS)
+        page = await browser.new_page()
+
+        last_shown = None
+
+        async def receive_state(_, data):
             global latest_state, last_print_time
+            nonlocal last_shown
             latest_state = json.loads(data)
+
+            # Only print if robot actually moved / turned / near-box changed.
+            # This stops terminal spam when idle, but page still sends 60 msgs/sec.
+            key = (
+                latest_state.get("x"),
+                latest_state.get("z"),
+                latest_state.get("rotationY"),
+                latest_state.get("nearBox"),
+            )
+            if key == last_shown:
+                return
+
             now = time.time()
-            
-            # Print live state summary at most twice per second to prevent terminal flooding
             if now - last_print_time >= 0.5:
                 last_print_time = now
-                pos = f"x={latest_state.get('x')}, z={latest_state.get('z')}, rot={latest_state.get('rotationY')}"
-                fps = latest_state.get('fps', 'N/A')
-                near = "YES ⚠️" if latest_state.get('nearBox') else "NO"
-                print(f"[LIVE STATE] Pos: ({pos}) | FPS: {fps} | Near Box: {near}")
+                last_shown = key
+                x, z, rot, near_box = key
+                fps = latest_state.get("fps", "N/A")
+                near = "YES" if near_box else "NO"
+                print(f"[LIVE] x={x} z={z} rot={rot} | FPS: {fps} | Near box: {near}")
 
-        # Expose binding so browser script can call window.robotState(...)
         await page.expose_binding("robotState", receive_state)
 
-        # Inject content script to capture window.postMessage("robot-state")
         await page.add_init_script("""
             window.addEventListener("message", (event) => {
                 if (event.data?.type === "robot-state") {
@@ -45,91 +74,59 @@ async def main():
         """)
 
         await page.goto(HOSTED_URL)
-        print("\n✅ Connected successfully to live hosted page!")
-        print("-" * 60)
-        print("Available Commands:")
-        print("  w / s / a / d : Move Forward / Backward / Turn Left / Turn Right (pulse 0.5s)")
-        print("  w-on / s-on   : Hold Move Forward / Backward")
-        print("  a-on / d-on   : Hold Turn Left / Turn Right")
-        print("  stop          : Stop all movement")
-        print("  t [x] [z]     : Teleport (default: 0 0)")
-        print("  c [hex]       : Change color (e.g., #ff0000, #00ff00, #ff00ff)")
-        print("  status        : Show current robot state")
-        print("  q             : Quit")
-        print("-" * 60 + "\n")
+        print("Connected! Commands: w/s/a/d, w-on/s-on/a-on/d-on, stop, t [x] [z], c [hex], status, q")
 
-        async def send_command(cmd_payload):
-            await page.evaluate("""
-                (cmd) => {
-                    window.postMessage({
-                        type: "robot-command",
-                        ...cmd
-                    }, "*");
-                }
-            """, cmd_payload)
+        async def send(cmd):
+            await page.evaluate(
+                "(cmd) => window.postMessage({ type: 'robot-command', ...cmd }, '*')",
+                cmd,
+            )
+
+        moves = {"w": "forward", "s": "back", "a": "left", "d": "right"}
 
         while True:
-            cmd = await asyncio.to_thread(input, "> ")
-            cmd = cmd.strip().lower()
+            cmd = (await asyncio.to_thread(input, "> ")).strip().lower()
 
             if not cmd:
                 continue
-
             if cmd == "q":
-                print("Exiting Playwright bridge...")
+                print("Bye!")
                 break
 
-            elif cmd == "w":
-                await send_command({"forward": True})
+            if cmd in moves:
+                key = moves[cmd]
+                await send({key: True})
                 await asyncio.sleep(0.5)
-                await send_command({"forward": False})
+                await send({key: False})
 
-            elif cmd == "s":
-                await send_command({"back": True})
-                await asyncio.sleep(0.5)
-                await send_command({"back": False})
-
-            elif cmd == "a":
-                await send_command({"left": True})
-                await asyncio.sleep(0.5)
-                await send_command({"left": False})
-
-            elif cmd == "d":
-                await send_command({"right": True})
-                await asyncio.sleep(0.5)
-                await send_command({"right": False})
-
-            elif cmd == "w-on":
-                await send_command({"forward": True})
-            elif cmd == "s-on":
-                await send_command({"back": True})
-            elif cmd == "a-on":
-                await send_command({"left": True})
-            elif cmd == "d-on":
-                await send_command({"right": True})
+            elif cmd in ("w-on", "s-on", "a-on", "d-on"):
+                key = moves[cmd.split("-")[0]]
+                await send({key: True})
 
             elif cmd == "stop":
-                await send_command({"stop": True})
+                await send({"stop": True})
 
-            elif cmd.startswith("t"):
+            elif cmd == "status":
+                print(json.dumps(latest_state, indent=2))
+
+            elif cmd == "t" or cmd.startswith("t "):
                 parts = cmd.split()
-                x = float(parts[1]) if len(parts) > 1 else 0.0
-                z = float(parts[2]) if len(parts) > 2 else 0.0
-                await send_command({"action": "teleport", "x": x, "z": z})
-                print(f"Teleported robot to ({x}, {z})")
+                try:
+                    x = float(parts[1]) if len(parts) > 1 else 0.0
+                    z = float(parts[2]) if len(parts) > 2 else 0.0
+                except ValueError:
+                    print("Usage: t [x] [z]  (numbers only)")
+                    continue
+                await send({"action": "teleport", "x": x, "z": z})
+                print(f"Teleported to ({x}, {z})")
 
-            elif cmd.startswith("c"):
+            elif cmd == "c" or cmd.startswith("c "):
                 parts = cmd.split()
                 color = parts[1] if len(parts) > 1 else "#ff0000"
                 if not color.startswith("#"):
                     color = "#" + color
-                await send_command({"action": "color", "color": color})
-                print(f"Changed robot color to {color}")
-
-            elif cmd == "status":
-                print("\n--- CURRENT ROBOT STATE ---")
-                print(json.dumps(latest_state, indent=2))
-                print("---------------------------\n")
+                await send({"action": "color", "color": color})
+                print(f"Color changed to {color}")
 
             else:
                 print(f"Unknown command: '{cmd}'")

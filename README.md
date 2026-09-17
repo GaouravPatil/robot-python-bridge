@@ -1,56 +1,42 @@
-# Robot Python Bridge 🤖
+# Robot Python Bridge
 
-A real-time Python bridge for observing and controlling a live, static Three.js Web App hosted on GitHub Pages (`https://gaouravpatil.github.io/robot-python-bridge/`).
+Live two-way bridge between ordinary local Python and a static Three.js app hosted on GitHub Pages (`https://gaouravpatil.github.io/robot-python-bridge/`). Python reads live robot state (position, rotation, FPS, near-box) streamed every frame and writes commands (move, teleport, color) into the live hosted page.
 
----
+Constraint compliance: hosting stays pure static files — `index.html` is untouched, no server added to it. The bridge runs entirely from local Python. See `demo_transcript.txt` for a live exchange proof.
 
-## 🚀 How to Run
+## How to Run
 
-### Prerequisites
-- Python 3.8+
-- Playwright for Python
+Prerequisites: Python 3.8+, Chromium (installed via Playwright).
 
-### Quickstart
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+playwright install chromium
 
-1. **Activate Environment & Install Dependencies:**
-   ```bash
-   source .venv/bin/activate
-   pip install playwright
-   playwright install chromium
-   ```
+python bridge.py
+# Set HEADLESS=1 to run without a visible window (servers / CI):
+# HEADLESS=1 python bridge.py
+```
 
-2. **Run the Bridge Script:**
-   ```bash
-   python bridge.py
-   ```
+Commands: `w / s / a / d` pulse-move 0.5s, `w-on / s-on / a-on / d-on` hold, `stop` halt, `t [x] [z]` teleport (default `0 0`), `c [hex]` body color, `status` full JSON dump, `q` quit.
 
-3. **Interact via Python CLI:**
-   - `w`, `s`, `a`, `d` — Move forward / backward / turn left / turn right (pulse 0.5s)
-   - `w-on`, `s-on`, `a-on`, `d-on` — Hold movement key
-   - `stop` — Halt all movement
-   - `t [x] [z]` — Teleport robot to coordinates (e.g. `t 10 -5`)
-   - `c [hex]` — Change robot body color (e.g. `c #ff0000`)
-   - `status` — Print detailed JSON state dump
-   - `q` — Quit bridge
+## Why This Mechanism
 
----
+We picked Playwright (Chrome DevTools Protocol automation) with `expose_binding` + `window.postMessage` interception because it needs no backend, no extension, and no changes to the static host, while staying event-driven and sub-second in both directions. A WebSocket relay or WebRTC channel would require hosting and maintaining a separate server, and an extension would add install friction, so Playwright is the simplest fit for local control of a public static URL.
 
-## 🛠️ Architecture & Mechanism Explanation
+How it works: page → Python via `postMessage({type: "robot-state"})` caught by `add_init_script` and forwarded through `expose_binding("robotState")`; Python → page via `page.evaluate(postMessage({type: "robot-command"}))`, which reuses the page's own key/action handling. No screenshots, no polling.
 
-We chose **Playwright (Browser Automation via Chrome DevTools Protocol)** with **Injected Binding & `window.postMessage` Event Interception** to bridge local Python with the static hosted web page.
-
-### Why this approach over alternatives?
-- **No Backend / Server Required**: Keeps the hosted web application strictly static (compliant with assignment constraints).
-- **Sub-Millisecond Latency**: Python receives state updates directly from the browser window event loop via Playwright's native JavaScript execution context (`expose_binding`).
-- **No Browser Extensions or Complex Setup**: Unlike building a custom Chrome Extension or setting up a WebRTC signaling server / WebSocket relay, this mechanism works out-of-the-box with standard Python libraries against any public static URL without requiring browser extension installations or separate proxy infrastructure.
-
----
-
-## ⚖️ Trade-offs & Analysis
+## Trade-offs
 
 | Aspect | Evaluation |
 |---|---|
-| **Latency** | **Near-instant (< 1ms)** — Data is passed in-process between Chromium's JS engine and Playwright's Python event loop. |
-| **Security** | Requires running Python locally with permission to launch Chromium instances. Since communication occurs locally between Python and Chromium, no sensitive data is exposed over external relay networks. |
-| **Hosting Requirements** | Pure static files (GitHub Pages / S3 / Vercel). Zero backend overhead or WebSockets server cost. |
-| **Limitations** | Requires Playwright / Chromium to be running on the host machine driving the session (cannot observe a completely detached user browser without Playwright attachment or extension relay). |
+| Latency | Sub-second, near-instant locally — in-process JS-to-Python binding for reads, single `evaluate` for writes. Page streams ~60 msgs/sec; Python prints at most twice/sec and only on change. |
+| Security | Nothing exposed to the internet. Risk is local only: script launches Chromium on your machine. No secrets leave the host. |
+| Browser permissions | Requires local permission to launch Chromium via Playwright. No extension install, no remote debugging flags, no extra browser permissions. |
+| Hosting | Pure static (GitHub Pages / S3 / Vercel). Zero backend cost. |
+| Limitations | Chromium + Python must run on the same machine driving the session. Cannot observe a detached stranger's tab, cannot scale to remote multi-user control — that would need a WebSocket relay instead. Fails without display unless `HEADLESS=1` is set. |
+
+## Demo
+
+Full terminal transcript: [`demo_transcript.txt`](demo_transcript.txt). Record a GIF/screen recording of `python bridge.py` alongside the hosted tab for visual proof — robot visibly moves, teleports, and recolors as commands are typed.
