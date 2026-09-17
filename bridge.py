@@ -1,17 +1,3 @@
-"""Robot Python Bridge — Proxie DevOps Assignment (Round 1).
-
-Proves a fully static hosted web app can be observed and controlled
-from ordinary local Python, with no backend added to the hosting.
-
-Hosting: pure static files only (GitHub Pages). index.html is untouched.
-Mechanism: Playwright (Chrome DevTools Protocol) automation from local Python.
-  - Read (page -> Python): page broadcasts window.postMessage({type:"robot-state"...})
-    every frame. We catch it with add_init_script and forward it via
-    expose_binding("robotState") into Python. Event-driven, sub-second, no screenshots.
-  - Write (Python -> page): page listens for window.postMessage({type:"robot-command"...}).
-    We inject commands with page.evaluate(). Reuses the page's own key handling.
-"""
-
 import asyncio
 import json
 import os
@@ -43,8 +29,7 @@ async def main():
             nonlocal last_shown
             latest_state = json.loads(data)
 
-            # Only print if robot actually moved / turned / near-box changed.
-            # This stops terminal spam when idle, but page still sends 60 msgs/sec.
+            # Only print if robot actually moved
             key = (
                 latest_state.get("x"),
                 latest_state.get("z"),
@@ -85,6 +70,7 @@ async def main():
         moves = {"w": "forward", "s": "back", "a": "left", "d": "right"}
 
         while True:
+            #async loop allows it to run in background while recieving messages
             cmd = (await asyncio.to_thread(input, "> ")).strip().lower()
 
             if not cmd:
