@@ -185,39 +185,60 @@ function animate() {
     if (dist < 3.5) nearBox = true;
   });
 
-  // Broadcast live robot state so an extension/content-script/Playwright bridge can pick it up
-  window.postMessage({
-    type: "robot-state",
-    x: Number(robot.position.x.toFixed(2)),
-    z: Number(robot.position.z.toFixed(2)),
-    rotationY: Number(robot.rotation.y.toFixed(2)),
-    fps: fps,
-    nearBox: nearBox,
-    nearestBoxDist: Number(nearestBoxDist.toFixed(2))
-  }, "*");
+  // Send state to Python bridge over WebSocket
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: "robot-state",
+      x: Number(robot.position.x.toFixed(2)),
+      z: Number(robot.position.z.toFixed(2)),
+      rotationY: Number(robot.rotation.y.toFixed(2)),
+      fps, nearBox,
+      nearestBoxDist: Number(nearestBoxDist.toFixed(2))
+    }));
+  }
 }
 
-addEventListener("message", (e) => {
-  if (e.source !== window || e.data?.type !== "robot-command") return;
-  const cmd = e.data;
+// --- WebSocket bridge to local Python server ---
+let ws = null;
+const WS_URL = "ws://localhost:8765";
 
-  // Key controls
-  if (cmd.forward !== undefined) { if (cmd.forward) keys.add("w"); else keys.delete("w"); }
-  if (cmd.back !== undefined) { if (cmd.back) keys.add("s"); else keys.delete("s"); }
-  if (cmd.left !== undefined) { if (cmd.left) keys.add("a"); else keys.delete("a"); }
-  if (cmd.right !== undefined) { if (cmd.right) keys.add("d"); else keys.delete("d"); }
-  if (cmd.run !== undefined) { if (cmd.run) keys.add("shift"); else keys.delete("shift"); }
-  if (cmd.stop) { keys.clear(); }
+function connectWS() {
+  ws = new WebSocket(WS_URL);
 
-  // Custom action controls (Teleport, Color change)
-  if (cmd.action === "teleport" && typeof cmd.x === "number" && typeof cmd.z === "number") {
-    robot.position.x = cmd.x;
-    robot.position.z = cmd.z;
-  }
-  if (cmd.action === "color" && cmd.color) {
-    body.material.color.set(cmd.color);
-  }
-});
+  ws.onopen = () => {
+    console.log("Bridge connected");
+    document.getElementById("hud").textContent = "Connected to Python bridge ✓";
+  };
+
+  ws.onclose = () => {
+    console.log("Bridge disconnected — retrying in 2s");
+    document.getElementById("hud").textContent = "WASD / Arrow Keys to move — Shift to run";
+    setTimeout(connectWS, 2000);
+  };
+
+  ws.onerror = () => ws.close();
+
+  ws.onmessage = (e) => {
+    const cmd = JSON.parse(e.data);
+
+    if (cmd.forward !== undefined) { cmd.forward ? keys.add("w") : keys.delete("w"); }
+    if (cmd.back !== undefined)    { cmd.back    ? keys.add("s") : keys.delete("s"); }
+    if (cmd.left !== undefined)    { cmd.left    ? keys.add("a") : keys.delete("a"); }
+    if (cmd.right !== undefined)   { cmd.right   ? keys.add("d") : keys.delete("d"); }
+    if (cmd.run !== undefined)     { cmd.run     ? keys.add("shift") : keys.delete("shift"); }
+    if (cmd.stop) keys.clear();
+
+    if (cmd.action === "teleport" && typeof cmd.x === "number" && typeof cmd.z === "number") {
+      robot.position.x = cmd.x;
+      robot.position.z = cmd.z;
+    }
+    if (cmd.action === "color" && cmd.color) {
+      body.material.color.set(cmd.color);
+    }
+  };
+}
+
+connectWS();
 animate();
 </script>
 </body>
